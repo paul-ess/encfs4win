@@ -731,22 +731,21 @@ shared_ptr<FileNode> DirNode::renameNode( const char *from, const char *to,
 
     if(node)
     {
-	uint64_t newIV = 0;
-	string cname = rootDir + naming->encodePath( to, &newIV );
+		uint64_t newIV = 0;
+		string cname = rootDir + naming->encodePath( to, &newIV );
 
-	rLog(Info, "renaming internal node %s -> %s",
-		node->cipherName(), cname.c_str());
+		rLog(Info, "renaming internal node %s -> %s", node->cipherName(), cname.c_str());
 
-	if(node->setName( to, cname.c_str(), newIV, forwardMode ))
-	{
-	    if(ctx)
-		ctx->renameNode( from, to );
-	} else
-	{
-	    // rename error! - put it back 
-	    rError("renameNode failed");
-	    throw RLOG_ERROR("Internal node name change failed!");
-	}
+		if(node->setName( to, cname.c_str(), newIV, forwardMode ))
+		{
+			if(ctx)
+			ctx->renameNode( from, to );
+		} else
+		{
+			// rename error! - put it back 
+			rError("renameNode failed");
+			throw RLOG_ERROR("Internal node name change failed!");
+		}
     }
 
     return node;

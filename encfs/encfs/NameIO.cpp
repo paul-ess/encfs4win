@@ -173,10 +173,13 @@ bool NameIO::getReverseEncryption() const
 }
 
 
-std::string NameIO::recodePath( const char *path, 
+std::string NameIO::recodePath
+( 
+	const char *path, 
 	int (NameIO::*_length)(int) const,
-	int (NameIO::*_code)(const char*, int, uint64_t *, char*) const,
-	uint64_t *iv ) const
+	int (NameIO::*_code)(const char*, int, uint64_t *, char*) const, 
+	uint64_t *iv 
+) const
 {
     string output;
 
@@ -248,10 +251,8 @@ std::string NameIO::_encodePath( const char *plaintextPath, uint64_t *iv ) const
 std::string NameIO::_decodePath( const char *cipherPath, uint64_t *iv ) const
 {
     // if chaining is not enabled, then the iv pointer is not used..
-    if(!chainedNameIV)
-	iv = 0;
-    return recodePath( cipherPath, 
-	    &NameIO::maxDecodedNameLen, &NameIO::decodeName, iv);
+    if(!chainedNameIV) iv = 0;
+    return recodePath( cipherPath, &NameIO::maxDecodedNameLen, &NameIO::decodeName, iv);
 }
 
 std::string NameIO::encodePath( const char *path, uint64_t *iv ) const

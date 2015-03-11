@@ -28,6 +28,9 @@
 #include <vector>
 #include <boost/shared_ptr.hpp>
 
+#include <openssl/bio.h>
+#include <openssl/evp.h>
+
 enum ConfigType
 {
     Config_None = 0,
@@ -70,6 +73,12 @@ struct EncFSConfig
 
     bool chainedNameIV; // filename IV chaining
     bool allowHoles; // allow holes in files (implicit zero blocks)
+
+	// Additions for Authenticated Encryption and Yubikey support
+	bool authenticatedEncryption;
+	std::string yubikey;
+	EVP_CIPHER_CTX *ctx_ae;
+	EVP_CIPHER_CTX *ctx_ad;
 
     EncFSConfig()
         : keyData()

@@ -17,6 +17,9 @@
 
 #include "NullCipher.h"
 
+#include <cstdio>
+#include <iostream>
+
 #include "Range.h"
 #include "Interface.h"
 

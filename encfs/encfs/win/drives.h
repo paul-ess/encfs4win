@@ -36,9 +36,11 @@ public:
 	void Umount(HWND hwnd);
 	bool Mounted() const { return mounted; }
 	void CheckMounted();
+	std::tstring dir;
+
 private:
 	std::string configName;
-	std::tstring dir;
+	//std::tstring dir;
 	TCHAR mnt[4];
 	bool mounted;
 	boost::shared_ptr<SubProcessInformations> subProcess;

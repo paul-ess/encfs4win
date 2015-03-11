@@ -76,17 +76,17 @@ Cipher::GetAlgorithmList( bool includeHidden )
     CipherMap_t::const_iterator mapEnd = gCipherMap->end();
     for(it = gCipherMap->begin(); it != mapEnd; ++it)
     {
-	if(includeHidden || !it->second.hidden)
-	{
-	    CipherAlgorithm tmp;
-	    tmp.name = it->first;
-	    tmp.description = it->second.description;
-	    tmp.iface = it->second.iface;
-	    tmp.keyLength = it->second.keyLength;
-	    tmp.blockSize = it->second.blockSize;
+		if(includeHidden || !it->second.hidden)
+		{
+			CipherAlgorithm tmp;
+			tmp.name = it->first;
+			tmp.description = it->second.description;
+			tmp.iface = it->second.iface;
+			tmp.keyLength = it->second.keyLength;
+			tmp.blockSize = it->second.blockSize;
 
-	    result.push_back( tmp );
-	}
+			result.push_back( tmp );
+		}
     }
 
     return result;

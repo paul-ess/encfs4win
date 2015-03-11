@@ -57,7 +57,8 @@ enum ConfigMode
 {
     Config_Prompt,
     Config_Standard,
-    Config_Paranoia
+    Config_Paranoia,
+	Config_Authenticated
 };
 
 struct EncFS_Opts

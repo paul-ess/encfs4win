@@ -31,6 +31,10 @@
 #include <openssl/engine.h>
 #endif
 
+
+// The following include is a requirement of the openssl dev build!!
+//#include <openssl/applink.c>
+
 unsigned long pthreads_thread_id()
 {
 	return GetCurrentThreadId();
@@ -93,7 +97,8 @@ void openssl_init(bool threaded)
     {
 	// provide locking functions to OpenSSL since we'll be running with
 	// threads accessing openssl in parallel.
-	CRYPTO_set_id_callback( pthreads_thread_id );
+	// CRYPTO_set_id_callback( pthreads_thread_id ); --*PE This has been deprecated in openssl
+	//  replaced by CRYPTO_THREADID_set_callback, but not needed on windows
 	CRYPTO_set_locking_callback( pthreads_locking_callback );
     }
 }

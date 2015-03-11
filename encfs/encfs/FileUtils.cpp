@@ -76,6 +76,9 @@ using namespace gnu;
 namespace fs = boost::filesystem;
 namespace serial = boost::serialization;
 
+// Yubikey Enable FLAG
+bool YK_ENABLED = false;
+
 static const int DefaultBlockSize = 1024;
 // The maximum length of text passwords.  If longer are needed,
 // use the extpass option, as extpass can return arbitrary length binary data.
@@ -156,6 +159,8 @@ namespace boost
             ar << make_nvp("blockMACBytes", cfg.blockMACBytes);
             ar << make_nvp("blockMACRandBytes", cfg.blockMACRandBytes);
             ar << make_nvp("allowHoles", cfg.allowHoles);
+			ar << make_nvp("authenticatedEncryption", cfg.authenticatedEncryption);
+			ar << make_nvp("yubikey", cfg.yubikey);
 
             int encodedSize = cfg.keyData.size();
             ar << make_nvp("encodedKeySize", encodedSize);
@@ -209,7 +214,9 @@ namespace boost
             ar >> make_nvp("blockMACBytes", cfg.blockMACBytes);
             ar >> make_nvp("blockMACRandBytes", cfg.blockMACRandBytes);
             ar >> make_nvp("allowHoles", cfg.allowHoles);
-      
+			ar >> make_nvp("authenticatedEncryption", cfg.authenticatedEncryption);
+			ar >> make_nvp("yubikey", cfg.yubikey);
+
             int encodedSize;
             ar >> make_nvp("encodedKeySize", encodedSize);
             rAssert(encodedSize == cfg.getCipher()->encodedKeySize());
@@ -394,9 +401,7 @@ ConfigType readConfig( const string &rootDir,
     return Config_None;
 }
 
-bool readV6Config( const char *configFile, 
-        const boost::shared_ptr<EncFSConfig> &config,
-	ConfigInfo *info)
+bool readV6Config( const char *configFile, const boost::shared_ptr<EncFSConfig> &config, ConfigInfo *info)
 {
     (void)info;
 
@@ -407,7 +412,18 @@ bool readV6Config( const char *configFile,
         {
             boost::archive::xml_iarchive ia( st );
             ia >> BOOST_SERIALIZATION_NVP( *config );
-        
+
+        	// AE Cipher Initialisation
+			if (config->authenticatedEncryption)
+			{
+				// AES-256-OCB Mode
+				config->ctx_ae = EVP_CIPHER_CTX_new();
+				config->ctx_ad = EVP_CIPHER_CTX_new();
+				EVP_EncryptInit_ex(config->ctx_ae, EVP_aes_256_ocb(), NULL, NULL, NULL);
+				EVP_DecryptInit_ex(config->ctx_ad, EVP_aes_256_ocb(), NULL, NULL, NULL);
+			}
+			// Yubikey FLAG
+			if (config->yubikey != "none") YK_ENABLED = true;
             return true;
         } catch(boost::archive::archive_exception &e)
         {
@@ -871,6 +887,27 @@ bool boolDefaultNo(const char *prompt)
 }
 
 static 
+bool selectAuthenticatedEncryption()
+{
+    // xgroup(setup)
+    return boolDefaultNo(
+            _("Enable Authenticated Encryption?\n"
+	"This uses AES-OCB and overrides all other options.\n"));
+}
+
+static 
+std::string selectYubikey()
+{
+    bool res = boolDefaultNo( _("Enable Yubikey support?\n"));
+	if (res) {
+		YK_ENABLED = true;
+		return "YK_WRAP_PATH";
+	}
+	else return "none";
+}
+
+
+static 
 void selectBlockMAC(int *macBytes, int *macRandBytes)
 {
     // xgroup(setup)
@@ -969,8 +1006,9 @@ bool selectZeroBlockPassThrough()
 	"This avoids writing encrypted blocks when file holes are created."));
 }
 
-RootPtr createV6Config( EncFS_Context *ctx,
-        const shared_ptr<EncFS_Opts> &opts )
+
+
+RootPtr createV6Config( EncFS_Context *ctx, const shared_ptr<EncFS_Opts> &opts )
 {
     const std::string rootDir = opts->rootDir;
     bool enableIdleTracking = opts->idleTracking;
@@ -992,13 +1030,14 @@ RootPtr createV6Config( EncFS_Context *ctx,
     {
         // xgroup(setup)
         cout << _("Please choose from one of the following options:\n"
+				" enter \"a\" for the new authenticated encryption mode,\n"
                 " enter \"x\" for expert configuration mode,\n"
                 " enter \"p\" for pre-configured paranoia mode,\n"
                 " anything else, or an empty line will select standard mode.\n"
                 "?> ");
     
         char *res = fgets( answer, sizeof(answer), stdin );
-	(void)res;
+		(void)res;
         cout << "\n";
     }
 
@@ -1012,118 +1051,147 @@ RootPtr createV6Config( EncFS_Context *ctx,
     bool chainedIV = false;
     bool externalIV = false;
     bool allowHoles = true;
+	bool authenticatedEncryption = false;
+	std::string yubikey = "none";
+
     long desiredKDFDuration = NormalKDFDuration;
     
     if (reverseEncryption)
     {
-	uniqueIV = false;
-	chainedIV = false;
-	externalIV = false;
-	blockMACBytes = 0;
-	blockMACRandBytes = 0;
+		uniqueIV = false;
+		chainedIV = false;
+		externalIV = false;
+		blockMACBytes = 0;
+		blockMACRandBytes = 0;
     }
 
-    if(configMode == Config_Paranoia || answer[0] == 'p')
-    {
-	if (reverseEncryption)
+	// NEW Authenticated Mode
+	if ( configMode == Config_Authenticated || answer[0] == 'a' )
 	{
-	    rError(_("Paranoia configuration not supported for --reverse"));
-	    return rootInfo;
+		cout << _(
+			"You have selected the new Authenticated Encryption mode\n"
+			"o This mode utilises AES-256 in OCB mode with a unique IV (header) per file\n"
+			"o Reverse encryption is not supported\n\n"
+		);
+
+		authenticatedEncryption = true;
+		keySize = 256;
+		blockSize = DefaultBlockSize;
+		alg = findCipherAlgorithm("AES", keySize);
+		nameIOIface = BlockNameIO::CurrentInterface();
+		uniqueIV   = true;
+		chainedIV  = true;
+		externalIV = false;
+		desiredKDFDuration = NormalKDFDuration;
+
+		yubikey = selectYubikey();
 	}
 
-	// xgroup(setup)
-	cout << _("Paranoia configuration selected.") << "\n";
-	// look for AES with 256 bit key..
-	// Use block filename encryption mode.
-	// Enable per-block HMAC headers at substantial performance penalty..
-	// Enable per-file initialization vector headers.
-	// Enable filename initialization vector chaning
-	keySize = 256;
-	blockSize = DefaultBlockSize;
-	alg = findCipherAlgorithm("AES", keySize);
-	nameIOIface = BlockNameIO::CurrentInterface();
-	blockMACBytes = 8;
-	blockMACRandBytes = 0; // using uniqueIV, so this isn't necessary
-	uniqueIV = true;
-	chainedIV = true;
-	externalIV = true;
-        desiredKDFDuration = ParanoiaKDFDuration;
-    } else if(configMode == Config_Standard || answer[0] != 'x')
-    {
-	// xgroup(setup)
-	cout << _("Standard configuration selected.") << "\n";
-	// AES w/ 192 bit key, block name encoding, per-file initialization
-        // vectors are all standard.
-	keySize = 192;
-	blockSize = DefaultBlockSize;
-	alg = findCipherAlgorithm("AES", keySize);
-	blockMACBytes = 0;
-	externalIV = false;
-	nameIOIface = BlockNameIO::CurrentInterface();
 
-	if (reverseEncryption)
-	{
-	    cout << _("--reverse specified, not using unique/chained IV") 
-		<< "\n";
-	} else
-	{
-	    uniqueIV = true;
-	    chainedIV = true;
-	}
+	// PARANOIA MODE
+    else if (configMode == Config_Paranoia || answer[0] == 'p')
+    {
+		if (reverseEncryption)
+		{
+			rError(_("Paranoia configuration not supported for --reverse"));
+			return rootInfo;
+		}
+
+		// xgroup(setup)
+		cout << _("Paranoia configuration selected.") << "\n";
+		// look for AES with 256 bit key..
+		// Use block filename encryption mode.
+		// Enable per-block HMAC headers at substantial performance penalty..
+		// Enable per-file initialization vector headers.
+		// Enable filename initialization vector chaning
+		keySize = 256;
+		blockSize = DefaultBlockSize;
+		alg = findCipherAlgorithm("AES", keySize);
+		nameIOIface = BlockNameIO::CurrentInterface();
+		blockMACBytes = 8;
+		blockMACRandBytes = 0; // using uniqueIV, so this isn't necessary
+		uniqueIV = true;
+		chainedIV = true;
+		externalIV = true;
+		desiredKDFDuration = ParanoiaKDFDuration;
+		// *** END of Paranoia Config
+
+    } 
+	else if(configMode == Config_Standard || answer[0] != 'x')
+    {
+		// xgroup(setup)
+		cout << _("Standard configuration selected.") << "\n";
+		// AES w/ 192 bit key, block name encoding, per-file initialization
+		// vectors are all standard.
+		keySize = 192;
+		blockSize = DefaultBlockSize;
+		alg = findCipherAlgorithm("AES", keySize);
+		blockMACBytes = 0;
+		externalIV = false;
+		nameIOIface = BlockNameIO::CurrentInterface();
+
+		if (reverseEncryption)
+		{
+			cout << _("--reverse specified, not using unique/chained IV") << "\n";
+		} else
+		{
+			uniqueIV = true;
+			chainedIV = true;
+		}
     }
 
+	// EXPERT MODE
     if(answer[0] == 'x' || alg.name.empty())
     {
-	if(answer[0] != 'x')
-	{
-	    // xgroup(setup)
-	    cout << _("Sorry, unable to locate cipher for predefined "
-		"configuration...\n"
-		"Falling through to Manual configuration mode.");
-	} else
-	{
-	    // xgroup(setup)
-	    cout << _("Manual configuration mode selected.");
-	}
-	cout << endl;
+		if(answer[0] != 'x')
+		{
+			// xgroup(setup)
+			cout << _("Sorry, unable to locate cipher for predefined "
+			"configuration...\n"
+			"Falling through to Manual configuration mode.");
+		} else
+		{
+			// xgroup(setup)
+			cout << _("Manual configuration mode selected.");
+		}
+		cout << endl;
 
-	// query user for settings..
-    	alg = selectCipherAlgorithm();
-	keySize = selectKeySize( alg );
-	blockSize = selectBlockSize( alg );
-	nameIOIface = selectNameCoding();
-	if (reverseEncryption)
-	{
-	    cout << _("--reverse specified, not using unique/chained IV") << "\n";
-	} else
-	{
-	    chainedIV = selectChainedIV();
-	    uniqueIV = selectUniqueIV();
-	    if(chainedIV && uniqueIV)
-		externalIV = selectExternalChainedIV();
-	    else
-	    {
-		// xgroup(setup)
-		cout << _("External chained IV disabled, as both 'IV chaining'\n"
-		    "and 'unique IV' features are required for this option.") 
-                    << "\n";
-		externalIV = false;
-	    }
-	    selectBlockMAC(&blockMACBytes, &blockMACRandBytes);
-            allowHoles = selectZeroBlockPassThrough();
-	}
+		// query user for settings..
+		alg = selectCipherAlgorithm();
+		keySize = selectKeySize( alg );
+		blockSize = selectBlockSize( alg );
+		nameIOIface = selectNameCoding();
+		if (reverseEncryption)
+		{
+			cout << _("--reverse specified, not using unique/chained IV") << "\n";
+		} else
+		{
+			chainedIV = selectChainedIV();
+			uniqueIV = selectUniqueIV();
+			if(chainedIV && uniqueIV) externalIV = selectExternalChainedIV();
+			else
+			{
+				// xgroup(setup)
+				cout << _("External chained IV disabled, as both 'IV chaining'\n"
+					"and 'unique IV' features are required for this option.") << "\n";
+				externalIV = false;
+			}
+			authenticatedEncryption = selectAuthenticatedEncryption();
+			yubikey = selectYubikey();
+			if (!authenticatedEncryption) selectBlockMAC(&blockMACBytes, &blockMACRandBytes);
+			allowHoles = selectZeroBlockPassThrough();
+		}
     }
+
 
     shared_ptr<Cipher> cipher = Cipher::New( alg.name, keySize );
     if(!cipher)
     {
-	rError(_("Unable to instanciate cipher %s, key size %i, block size %i"),
-		alg.name.c_str(), keySize, blockSize);
-	return rootInfo;
+		rError(_("Unable to instanciate cipher %s, key size %i, block size %i"), alg.name.c_str(), keySize, blockSize);
+		return rootInfo;
     } else
     {
-	rDebug("Using cipher %s, key size %i, block size %i",
-	    alg.name.c_str(), keySize, blockSize);
+		rDebug("Using cipher %s, key size %i, block size %i", alg.name.c_str(), keySize, blockSize);
     }
     
     shared_ptr<EncFSConfig> config( new EncFSConfig );
@@ -1141,10 +1209,22 @@ RootPtr createV6Config( EncFS_Context *ctx,
     config->chainedNameIV = chainedIV;
     config->externalIVChaining = externalIV;
     config->allowHoles = allowHoles;
+    config->authenticatedEncryption = authenticatedEncryption;
+	config->yubikey = yubikey;
 
     config->salt.clear();
     config->kdfIterations = 0; // filled in by keying function
     config->desiredKDFDuration = desiredKDFDuration;
+
+	// AE Cipher Initialisation
+	if (authenticatedEncryption)
+	{
+		// AES-256-OCB Mode
+		config->ctx_ae = EVP_CIPHER_CTX_new();
+		config->ctx_ad = EVP_CIPHER_CTX_new();
+		EVP_EncryptInit_ex(config->ctx_ae, EVP_aes_256_ocb(), NULL, NULL, NULL);
+		EVP_DecryptInit_ex(config->ctx_ad, EVP_aes_256_ocb(), NULL, NULL, NULL);
+	}
 
     cout << "\n";
     // xgroup(setup)
@@ -1194,9 +1274,9 @@ RootPtr createV6Config( EncFS_Context *ctx,
 
     if(!volumeKey)
     {
-	rWarning(_("Failure generating new volume key! "
-		    "Please report this error."));
-	return rootInfo;
+		rWarning(_("Failure generating new volume key! "
+				"Please report this error."));
+		return rootInfo;
     }
 
     if(!saveConfig( Config_V6, rootDir, config ))
@@ -1207,10 +1287,9 @@ RootPtr createV6Config( EncFS_Context *ctx,
 	    cipher, volumeKey );
     if(!nameCoder)
     {
-	rWarning(_("Name coding interface not supported"));
-	cout << _("The filename encoding interface requested is not available") 
-	    << endl;
-	return rootInfo;
+		rWarning(_("Name coding interface not supported"));
+		cout << _("The filename encoding interface requested is not available") << endl;
+		return rootInfo;
     }
 	
     nameCoder->setChainedNameIV( config->chainedNameIV );
@@ -1229,11 +1308,11 @@ RootPtr createV6Config( EncFS_Context *ctx,
     rootInfo = RootPtr( new EncFS_Root );
     rootInfo->cipher = cipher;
     rootInfo->volumeKey = volumeKey;
-    rootInfo->root = shared_ptr<DirNode>( 
-            new DirNode( ctx, rootDir, fsConfig ));
+    rootInfo->root = shared_ptr<DirNode>( new DirNode( ctx, rootDir, fsConfig ));
 
     return rootInfo;
 }
+
 
 void showFSInfo( const boost::shared_ptr<EncFSConfig> &config )
 {
@@ -1330,7 +1409,7 @@ void showFSInfo( const boost::shared_ptr<EncFSConfig> &config )
     if(config->uniqueIV)
     {
 	// xgroup(diag)
-	cout << _("Each file contains 8 byte header with unique IV data.\n");
+	cout << _("Each file contains header with unique IV data.\n");
     }
     if(config->chainedNameIV)
     {
@@ -1347,7 +1426,16 @@ void showFSInfo( const boost::shared_ptr<EncFSConfig> &config )
 	// xgroup(diag)
 	cout << _("File holes passed through to ciphertext.\n");
     }
+	if(config->authenticatedEncryption)
+	{
+		cout << _("Authenticated Ecnryption Enabled\n");
+	}
+	if(config->yubikey != "none")
+	{
+		cout << _("Yubikey support Enabled\n");
+	}
     cout << "\n";
+
 }
    
 shared_ptr<Cipher> EncFSConfig::getCipher() const
@@ -1385,6 +1473,9 @@ CipherKey EncFSConfig::makeKey(const char *password, int passwdLen)
     CipherKey userKey;
     shared_ptr<Cipher> cipher = getCipher();
 
+	//printf("FileUtils/EncFSConfig::makeKey()\n");
+
+
     // if no salt is set and we're creating a new password for a new
     // FS type, then initialize salt..
     if(salt.size() == 0 && kdfIterations == 0 && cfgType >= Config_V6)
@@ -1404,21 +1495,26 @@ CipherKey EncFSConfig::makeKey(const char *password, int passwdLen)
             return userKey;
         }
 
+		//printf("New key, calling: cipher->newKey\n");
         userKey = cipher->newKey( password, passwdLen,
                 kdfIterations, desiredKDFDuration, 
                 getSaltData(), salt.size());
     } else
     {
+		printf("Calling: cipher->newKey\n");
         userKey = cipher->newKey( password, passwdLen );
     }
 
     return userKey;
 }
 
+
 CipherKey EncFSConfig::getUserKey(bool useStdin)
 {
     char passBuf[MaxPassBuf];
     char *res;
+
+	//printf("FileUtils/EncFSConfig::getUserKey\n");
 
     if( useStdin )
     {
@@ -1433,11 +1529,12 @@ CipherKey EncFSConfig::getUserKey(bool useStdin)
 		passBuf, sizeof(passBuf), RPP_ECHO_OFF );
     }
 
-    CipherKey userKey;
+	CipherKey userKey;
     if(!res)
 	cerr << _("Zero length password not allowed\n");
-    else
+	else {
         userKey = makeKey(passBuf, strlen(passBuf));
+	}
 
     memset( passBuf, 0, sizeof(passBuf) );
 
@@ -1557,6 +1654,8 @@ CipherKey EncFSConfig::getNewUserKey()
     CipherKey userKey;
     char passBuf[MaxPassBuf];
     char passBuf2[MaxPassBuf];
+
+	//printf("FileUtils/EncFSConfig::getNewUserKey()\n");
 
     do
     {

@@ -211,20 +211,20 @@ off_t RawFileIO::getSize() const
 {
     if(!knownSize)
     {
-	struct stat stbuf;
-	memset( &stbuf, 0, sizeof( struct stat ));
-	int res = unix::lstat( name.c_str(), &stbuf );
+		struct stat stbuf;
+		memset( &stbuf, 0, sizeof( struct stat ));
+		int res = unix::lstat( name.c_str(), &stbuf );
 
-	if(res == 0)
-	{
-	    const_cast<RawFileIO*>(this)->fileSize = stbuf.st_size;
-	    const_cast<RawFileIO*>(this)->knownSize = true;
-	    return fileSize;
-	} else
-	    return -1;
+		if(res == 0)
+		{
+			const_cast<RawFileIO*>(this)->fileSize = stbuf.st_size;
+			const_cast<RawFileIO*>(this)->knownSize = true;
+			return fileSize;
+		} else
+			return -1;
     } else
     {
-	return fileSize;
+		return fileSize;
     }
 }
 

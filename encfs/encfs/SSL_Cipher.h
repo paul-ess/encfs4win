@@ -146,5 +146,8 @@ private:
 };
 
 
+BYTE * returnSSLKey(const CipherKey &);
+
+
 #endif
 

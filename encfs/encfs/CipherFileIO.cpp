@@ -26,6 +26,13 @@
 #include <fcntl.h>
 #include <cerrno>
 
+//#include <boost/multiprecision/cpp_int.hpp>
+//using namespace boost::multiprecision;
+//uint128_t v_test = 1;
+
+
+const int HEADER_SIZE = 8; // 64 bit initialization vector..
+
 using boost::shared_ptr;
 
 /*
@@ -36,7 +43,6 @@ using boost::shared_ptr;
 */
 static rel::Interface CipherFileIO_iface("FileIO/Cipher", 2, 0, 1);
 
-const int HEADER_SIZE = 8; // 64 bit initialization vector..
 
 static bool checkSize( int fsBlockSize, int cipherBlockSize )
 {
@@ -153,11 +159,10 @@ int CipherFileIO::getAttr( struct stat *stbuf ) const
 {
     int res = base->getAttr( stbuf );
     // adjust size if we have a file header
-    if((res == 0) && haveHeader && 
-	    S_ISREG(stbuf->st_mode) && (stbuf->st_size > 0))
+    if((res == 0) && haveHeader && S_ISREG(stbuf->st_mode) && (stbuf->st_size > 0))
     {
-	rAssert(stbuf->st_size >= HEADER_SIZE);
-	stbuf->st_size -= HEADER_SIZE;
+		rAssert(stbuf->st_size >= HEADER_SIZE);
+		stbuf->st_size -= HEADER_SIZE;
     }
 
     return res;
@@ -170,8 +175,8 @@ off_t CipherFileIO::getSize() const
     // is a normal file!
     if(haveHeader && size > 0)
     {
-	rAssert(size >= HEADER_SIZE);
-	size -= HEADER_SIZE;
+		rAssert(size >= HEADER_SIZE);
+		size -= HEADER_SIZE;
     }
     return size;
 }
@@ -183,54 +188,49 @@ void CipherFileIO::initHeader( )
     off_t rawSize = base->getSize();
     if(rawSize >= HEADER_SIZE)
     {
-//	rDebug("reading existing header, rawSize = %" PRIi64, (long long int) rawSize);
-	// has a header.. read it
-	unsigned char buf[8] = {0};
+		// rDebug("reading existing header, rawSize = %" PRIi64, (long long int) rawSize);
+		// has a header.. read it
+		unsigned char buf[8] = {0};
 
-	IORequest req;
-	req.offset = 0;
-	req.data = buf;
-	req.dataLen = 8;
-	base->read( req );
+		IORequest req;
+		req.offset = 0;
+		req.data = buf;
+		req.dataLen = 8;
+		base->read( req );
 
-        cipher->streamDecode( buf, sizeof(buf),
-                              externalIV, key );
+		cipher->streamDecode( buf, sizeof(buf), externalIV, key );
 
-	fileIV = 0;
-	for(int i=0; i<8; ++i)
-	    fileIV = (fileIV << 8) | (uint64_t)buf[i];
+		fileIV = 0;
+		for(int i=0; i<8; ++i) fileIV = (fileIV << 8) | (uint64_t)buf[i];
 
-	rAssert(fileIV != 0); // 0 is never used..
-    } else
-    {
-	rDebug("creating new file IV header");
-
-	unsigned char buf[8] = {0};
-	do
+		rAssert(fileIV != 0); // 0 is never used..
+    } else 
 	{
-	    if(!cipher->randomize( buf, 8, false ))
-                throw RLOG_ERROR("Unable to generate a random file IV");
+		rDebug("creating new file IV header");
 
-	    fileIV = 0;
-	    for(int i=0; i<8; ++i)
-		fileIV = (fileIV << 8) | (uint64_t)buf[i];
+		unsigned char buf[8] = {0};
+		do
+		{
+			if(!cipher->randomize( buf, 8, false ))	throw RLOG_ERROR("Unable to generate a random file IV");
 
-	    if(fileIV == 0)
-		rWarning("Unexpected result: randomize returned 8 null bytes!");
-	} while(fileIV == 0); // don't accept 0 as an option..
+			fileIV = 0;
+			for(int i=0; i<8; ++i) fileIV = (fileIV << 8) | (uint64_t)buf[i];
 
-	if( base->isWritable() )
-	{
-	    cipher->streamEncode( buf, sizeof(buf), externalIV, key );
+			if(fileIV == 0) rWarning("Unexpected result: randomize returned 8 null bytes!");
+		} while(fileIV == 0); // don't accept 0 as an option..
 
-	    IORequest req;
-	    req.offset = 0;
-	    req.data = buf;
-	    req.dataLen = 8;
+		if( base->isWritable() )
+		{
+			cipher->streamEncode( buf, sizeof(buf), externalIV, key );
 
-	    base->write( req );
-	} else
-	    rDebug("base not writable, IV not written..");
+			IORequest req;
+			req.offset = 0;
+			req.data = buf;
+			req.dataLen = 8;
+
+			base->write( req );
+		} else
+			rDebug("base not writable, IV not written..");
     }
 //    rDebug("initHeader finished, fileIV = %" PRIu64 , fileIV);
 }
@@ -241,11 +241,11 @@ bool CipherFileIO::writeHeader( )
     {
 	// open for write..
 	int newFlags = lastFlags | O_RDWR;
-	if( base->open( newFlags ) < 0 )
-	{
-	    rDebug("writeHeader failed to re-open for write");
-	    return false;
-	}
+		if( base->open( newFlags ) < 0 )
+		{
+			rDebug("writeHeader failed to re-open for write");
+			return false;
+		}
     } 
 
     if(fileIV == 0)
@@ -255,8 +255,8 @@ bool CipherFileIO::writeHeader( )
     unsigned char buf[8] = {0};
     for(int i=0; i<8; ++i)
     {
-	buf[sizeof(buf)-1-i] = (unsigned char)(fileIV & 0xff);
-	fileIV >>= 8;
+		buf[sizeof(buf)-1-i] = (unsigned char)(fileIV & 0xff);
+		fileIV >>= 8;
     }
 
     cipher->streamEncode( buf, sizeof(buf), externalIV, key );
@@ -280,35 +280,33 @@ ssize_t CipherFileIO::readOneBlock( const IORequest &req ) const
     ssize_t readSize = 0;
     IORequest tmpReq = req;
 
-    if(haveHeader)
-	tmpReq.offset += HEADER_SIZE;
+    if(haveHeader) tmpReq.offset += HEADER_SIZE;
     readSize = base->read( tmpReq );
 
     bool ok;
     if(readSize > 0)
     {
-	if(haveHeader && fileIV == 0)
-    	    const_cast<CipherFileIO*>(this)->initHeader();
+		if(haveHeader && fileIV == 0) const_cast<CipherFileIO*>(this)->initHeader();
 
-	if(readSize != bs)
-	{
-            ok = streamRead( tmpReq.data, (int)readSize, blockNum ^ fileIV);
-	} else
-	{
-            ok = blockRead( tmpReq.data, (int)readSize, blockNum ^ fileIV);
-	}
+		if(readSize != bs)
+		{
+				ok = streamRead( tmpReq.data, (int)readSize, blockNum ^ fileIV);
+		} else
+		{
+				ok = blockRead( tmpReq.data, (int)readSize, blockNum ^ fileIV);
+		}
 
-	if(!ok)
-	{
-	    rDebug("decodeBlock failed for block %" PRIi64 ", size %i",
-		    blockNum, (int)readSize );
-	    readSize = -1;
-	}
-    } else
-	rDebug("readSize zero for offset %" PRIi64, req.offset);
+		if(!ok)
+		{
+			rDebug("decodeBlock failed for block %" PRIi64 ", size %i",
+				blockNum, (int)readSize );
+			readSize = -1;
+		}
+    } else rDebug("readSize zero for offset %" PRIi64, req.offset);
 
     return readSize;
 }
+
 
 
 bool CipherFileIO::writeOneBlock( const IORequest &req )
@@ -316,37 +314,33 @@ bool CipherFileIO::writeOneBlock( const IORequest &req )
     int bs = blockSize();
     off_t blockNum = req.offset / bs;
 
-    if(haveHeader && fileIV == 0)
-	initHeader();
+    if(haveHeader && fileIV == 0) initHeader();
 
     bool ok;
     if( req.dataLen != bs )
     {
-	ok = streamWrite( req.data, (int)req.dataLen, 
-		blockNum ^ fileIV );
+		ok = streamWrite( req.data, (int)req.dataLen, blockNum ^ fileIV );
     } else
     {
-	ok = blockWrite( req.data, (int)req.dataLen, 
-		blockNum ^ fileIV );
+		ok = blockWrite( req.data, (int)req.dataLen, blockNum ^ fileIV );
     }
 
     if( ok )
-    {
-	if(haveHeader)
-	{
-	    IORequest tmpReq = req;
-	    tmpReq.offset += HEADER_SIZE;
-	    ok = base->write( tmpReq );
+		{
+		if(haveHeader)
+		{
+			IORequest tmpReq = req;
+			tmpReq.offset += HEADER_SIZE;
+			ok = base->write( tmpReq );
+		} else ok = base->write( req );
 	} else
-	    ok = base->write( req );
-    } else
-    {
-	rDebug("encodeBlock failed for block %" PRIi64 ", size %i",
-		blockNum, req.dataLen);
-	ok = false;
-    }
+		{
+		rDebug("encodeBlock failed for block %" PRIi64 ", size %i",	blockNum, req.dataLen);
+		ok = false;
+		}
     return ok;
 }
+
 
 bool CipherFileIO::blockWrite( unsigned char *buf, int size, 
 	             uint64_t _iv64 ) const

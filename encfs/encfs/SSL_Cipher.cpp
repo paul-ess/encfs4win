@@ -62,6 +62,12 @@ inline int MIN(int a, int b)
 }
 #endif
 
+// Prototype of the Yubikey wrap function
+bool yk_unwrap(BYTE * , int * );
+
+extern bool YK_ENABLED;
+
+
 /*
     This produces the same result as OpenSSL's EVP_BytesToKey.  The difference
     is that here we can explicitly specify the key size, instead of relying on
@@ -239,13 +245,11 @@ static shared_ptr<Cipher> NewAESCipher( const Interface &iface, int keyLen )
 	break;
     }
     
-    return shared_ptr<Cipher>( new SSL_Cipher(iface, AESInterface, 
-		blockCipher, streamCipher, keyLen / 8) );
+    return shared_ptr<Cipher>( new SSL_Cipher(iface, AESInterface, blockCipher, streamCipher, keyLen / 8) );
 }
 
-static bool AES_Cipher_registered = Cipher::Register("AES", 
-	"16 byte block cipher", 
-	AESInterface, AESKeyRange, AESBlockRange, NewAESCipher);
+static bool AES_Cipher_registered = Cipher::Register("AES", "16 byte block cipher", AESInterface, AESKeyRange, AESBlockRange, NewAESCipher);
+
 #endif
 
 class SSLKey : public AbstractCipherKey
@@ -366,7 +370,7 @@ SSL_Cipher::SSL_Cipher(const rel::Interface &iface_,
     this->_keySize = keySize_;
     this->_ivLength = EVP_CIPHER_iv_length( _blockCipher );
    
-    rAssert(_ivLength == 8 || _ivLength == 16);
+    rAssert(_ivLength == 8 || _ivLength == 16 || _ivLength == 12); // *** PE temp
 
     rLog(CipherInfo, "allocated cipher %s, keySize %i, ivlength %i", 
 	    iface.name().c_str(), _keySize, _ivLength);
@@ -403,14 +407,25 @@ CipherKey SSL_Cipher::newKey(const char *password, int passwdLength,
         const unsigned char *salt, int saltLen)
 {
     shared_ptr<SSLKey> key( new SSLKey( _keySize, _ivLength) );
-    
+ 
+	//printf("SSL_Cipher/SSL_Cipher::newKey(6 param)\n");
+
+	// Yubikey hash/key processing
+	if (YK_ENABLED) {
+		if (!yk_unwrap( (BYTE *)password, &passwdLength )) {
+			printf("Error: Need YK_WRAP_PATH Enviromment Variable\n");
+			exit(1);
+		}
+	}
+
     if(iterationCount == 0)
     {
         // timed run, fills in iteration count
         int res = TimedPBKDF2(password, passwdLength, 
-                    salt, saltLen,
-                    _keySize+_ivLength, KeyData(key),
-                    1000 * desiredDuration);
+					salt, saltLen,
+					_keySize+_ivLength, KeyData(key),
+					1000 * desiredDuration);
+
         if(res <= 0)
         {
             rWarning("openssl error, PBKDF2 failed");
@@ -424,6 +439,7 @@ CipherKey SSL_Cipher::newKey(const char *password, int passwdLength,
                     password, passwdLength, 
                     const_cast<unsigned char*>(salt), saltLen, 
                     iterationCount, _keySize + _ivLength, KeyData(key)) != 1)
+
         {
             rWarning("openssl error, PBKDF2 failed");
             return CipherKey();
@@ -435,10 +451,20 @@ CipherKey SSL_Cipher::newKey(const char *password, int passwdLength,
     return key;
 }
 
+
 CipherKey SSL_Cipher::newKey(const char *password, int passwdLength)
 {
     shared_ptr<SSLKey> key( new SSLKey( _keySize, _ivLength) );
-    
+
+	//printf("SSL_Cipher/SSL_Cipher::newKey(2 param)\n");
+
+	// Yubikey hash/key processing
+	if (YK_ENABLED) {
+		if (!yk_unwrap( (BYTE *)password, &passwdLength )) {
+			printf("Error: Need YK_WRAP_PATH Environment Variable\n");
+			exit(1);
+		}
+	}
     int bytes = 0;
     if( iface.current() > 1 )
     {
@@ -447,6 +473,7 @@ CipherKey SSL_Cipher::newKey(const char *password, int passwdLength)
 	bytes = BytesToKey( _keySize, _ivLength, EVP_sha1(), 
 	    (unsigned char *)password, passwdLength, 16,
 	    KeyData(key), IVData(key) );
+
 
 	// the reason for moving from EVP_BytesToKey to BytesToKey function..
 	if(bytes != (int)_keySize)
@@ -461,7 +488,7 @@ CipherKey SSL_Cipher::newKey(const char *password, int passwdLength)
 	    (unsigned char *)password, passwdLength, 16,
 	    KeyData(key), IVData(key) );
     }
-  
+
     initKey( key, _blockCipher, _streamCipher, _keySize );
 
     return key;
@@ -784,6 +811,12 @@ static void unshuffleBytes(unsigned char *buf, int size)
 	buf[i] ^= buf[i-1];
 }
 
+BYTE * returnSSLKey(const CipherKey &ckey)
+{
+	shared_ptr<SSLKey> key = dynamic_pointer_cast<SSLKey>(ckey);
+	return KeyData(key);
+}
+
 /* Partial blocks are encoded with a stream cipher.  We make multiple passes on
  the data to ensure that the ends of the data depend on each other.
 */
@@ -825,8 +858,7 @@ bool SSL_Cipher::streamEncode(unsigned char *buf, int size,
     return true;
 }
 
-bool SSL_Cipher::streamDecode(unsigned char *buf, int size, 
-	uint64_t iv64, const CipherKey &ckey) const
+bool SSL_Cipher::streamDecode(unsigned char *buf, int size, uint64_t iv64, const CipherKey &ckey) const
 {
     rAssert( size > 0 );
     shared_ptr<SSLKey> key = dynamic_pointer_cast<SSLKey>(ckey);

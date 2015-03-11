@@ -12,6 +12,7 @@
 #define IDD_PASSWORD                            113
 #define IDD_PREFERENCES                         115
 #define IDC_CHKPARANOIA                         1001
+
 #define IDC_DIR                                 1004
 #define IDC_CMBDRIVE                            1005
 #define IDC_PWD1                                1009
@@ -19,3 +20,5 @@
 #define IDC_CHKSTARTUP                          1011
 #define IDC_PASSWORD                            1011
 #define IDC_CHKOPEN                             1012
+
+#define IDC_CHKYUBIKEY                          1013

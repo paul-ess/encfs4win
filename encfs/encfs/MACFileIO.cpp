@@ -112,6 +112,7 @@ inline static off_t roundUpDivide( off_t numerator, int denominator )
     return ( numerator + denominator - 1 ) / denominator;
 }
 
+// USER -> RAW
 // Convert from a location in the raw file to a location when MAC headers are
 // interleved with the data.
 // So, if the filesystem stores/encrypts [blockSize] bytes per block, then
@@ -122,18 +123,19 @@ inline static off_t roundUpDivide( off_t numerator, int denominator )
 //   ... blockNum = 1
 //   ... partialBlock = 0
 //   ... adjLoc = 1 * blockSize
-static off_t locWithHeader( off_t offset, int blockSize, int headerSize )
+ off_t locWithHeader( off_t offset, int blockSize, int headerSize )
 {
     off_t blockNum = roundUpDivide( offset , blockSize - headerSize );
     return offset + blockNum * headerSize;
 }
 
+// RAW -> USER
 // convert from a given location in the stream containing headers, and return a
 // location in the user-data stream (which doesn't contain MAC headers)..
 // The output value will always be less then the input value, because the
 // headers are stored at the beginning of the block, so even the first data is
 // offset by the size of the header.
-static off_t locWithoutHeader( off_t offset, int blockSize, int headerSize )
+ off_t locWithoutHeader( off_t offset, int blockSize, int headerSize )
 {
     off_t blockNum = roundUpDivide( offset , blockSize );
     return offset - blockNum * headerSize;
@@ -145,10 +147,10 @@ int MACFileIO::getAttr( struct stat *stbuf ) const
 
     if(res == 0 && S_ISREG(stbuf->st_mode))
     {
-	// have to adjust size field..
-	int headerSize = macBytes + randBytes;
-	int bs = blockSize() + headerSize;
-	stbuf->st_size = locWithoutHeader( stbuf->st_size, bs, headerSize );
+		// have to adjust size field..
+		int headerSize = macBytes + randBytes;
+		int bs = blockSize() + headerSize;
+		stbuf->st_size = locWithoutHeader( stbuf->st_size, bs, headerSize );
     }
 
     return res;
@@ -161,8 +163,7 @@ off_t MACFileIO::getSize() const
     int bs = blockSize() + headerSize;
 
     off_t size = base->getSize();
-    if(size > 0)
-	size = locWithoutHeader( size, bs, headerSize );
+    if(size > 0) size = locWithoutHeader( size, bs, headerSize );
 
     return size;
 }
@@ -173,15 +174,15 @@ ssize_t MACFileIO::readOneBlock( const IORequest &req ) const
 
     int bs = blockSize() + headerSize;
 
-    MemBlock mb = MemoryPool::allocate( bs );
+    MemBlock mb = MemoryPool::allocate( bs ); // A new full sized block
 
     IORequest tmp;
     tmp.offset = locWithHeader( req.offset, bs, headerSize );
-    tmp.data = mb.data;
-    tmp.dataLen = headerSize + req.dataLen;
+    tmp.data = mb.data;                      // The new block memory
+    tmp.dataLen = headerSize + req.dataLen; 
 
     // get the data from the base FileIO layer
-    ssize_t readSize = base->read( tmp );
+    ssize_t readSize = base->read( tmp ); // Here the base class is CipherFileIO, clear text block returned
 
     // don't store zeros if configured for zero-block pass-through
     bool skipBlock = true;
@@ -200,12 +201,11 @@ ssize_t MACFileIO::readOneBlock( const IORequest &req ) const
     {
         if(!skipBlock)
         {
-            // At this point the data has been decoded.  So, compute the MAC of
+            // At this point the data has been decoded. So, compute the MAC of
             // the block and check against the checksum stored in the header..
-            uint64_t mac = cipher->MAC_64( tmp.data + macBytes, 
-                    readSize - macBytes, key );
+            uint64_t mac = cipher->MAC_64( tmp.data + macBytes, readSize - macBytes, key );
 
-            for(int i=0; i<macBytes; ++i, mac >>= 8)
+            for(int i=0; i<macBytes; ++i, mac >>= 8) // Check each byte in turn
             {
                 int test = mac & 0xff;
                 int stored = tmp.data[i];
@@ -213,22 +213,19 @@ ssize_t MACFileIO::readOneBlock( const IORequest &req ) const
                 {
                     // uh oh.. 
                     int64_t blockNum = req.offset / bs;
-                    rWarning(_("MAC comparison failure in block %" PRIi64),
-                            blockNum);
+                    rWarning(_("MAC comparison failure in block %" PRIi64), blockNum);
                     if( !warnOnly )
                     {
                         MemoryPool::release( mb );
-                        throw RLOG_ERROR(
-                                _("MAC comparison failure, refusing to read"));
+                        throw RLOG_ERROR(_("MAC comparison failure, refusing to read"));
                     }
                     break;
                 }
             }
         }
-
-	// now copy the data to the output buffer
-	readSize -= headerSize;
-	memcpy( req.data, tmp.data + headerSize, readSize );
+		// now copy the data to the output buffer
+		readSize -= headerSize;
+		memcpy( req.data, tmp.data + headerSize, readSize ); // Copy the data (only) back to the requesting structure
     } else
     {
 	rDebug("readSize %i at offset %" PRIi64, (int)readSize, req.offset);

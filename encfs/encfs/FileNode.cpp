@@ -36,6 +36,7 @@
 #include "FileUtils.h"
 #include "Cipher.h"
 #include "CipherFileIO.h"
+#include "ACipherFileIO.h"
 #include "RawFileIO.h"
 #include "MACFileIO.h"
 #include "DirNode.h"
@@ -78,10 +79,15 @@ FileNode::FileNode(DirNode *parent_, const FSConfigPtr &cfg,
 
     // chain RawFileIO & CipherFileIO
     shared_ptr<FileIO> rawIO( new RawFileIO( _cname ) );
-    io = shared_ptr<FileIO>( new CipherFileIO( rawIO, fsConfig ));
 
-    if(cfg->config->blockMACBytes || cfg->config->blockMACRandBytes)
-        io = shared_ptr<FileIO>(new MACFileIO(io, fsConfig));
+	if (cfg->config->authenticatedEncryption) {
+		//printf("Using: ACipherFileIO() on file: %s (%s)\n", plaintextName_, cipherName_ );
+		io = shared_ptr<FileIO>( new ACipherFileIO( rawIO, fsConfig ));
+	}
+	else {
+		io = shared_ptr<FileIO>( new CipherFileIO( rawIO, fsConfig ));
+		if(cfg->config->blockMACBytes || cfg->config->blockMACRandBytes) io = shared_ptr<FileIO>(new MACFileIO(io, fsConfig));
+	}
 }
 
 FileNode::~FileNode()

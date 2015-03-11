@@ -15,6 +15,9 @@
 
 // TODO preferences ??
 
+// Yubikey Enable FLAG
+extern bool YK_ENABLED;
+
 NOTIFYICONDATA niData;
 
 static ULONGLONG GetDllVersion(LPCTSTR lpszDllName);
@@ -109,6 +112,7 @@ extern "C" int main_gui(HINSTANCE /* hInstance */, HINSTANCE /* hPrevInstance */
 		EnableAutoStart(false);
 		return 1;
 	}
+
 
 	// does not allow multiple instances
 	if (CreateMutex(NULL, TRUE, _T("mtx78269e54-bfb5-44ed-a8fd-3e04058428e5")) == NULL)
@@ -225,7 +229,10 @@ Cipher::CipherAlgorithm findCipherAlgorithm(const char *name,
 static void createConfig(const std::string& rootDir, bool paranoid, const char* password)
 {
 	bool reverseEncryption = false;
-	ConfigMode configMode = paranoid ? Config_Paranoia : Config_Standard;
+	//ConfigMode configMode = paranoid ? Config_Paranoia : Config_Standard;
+
+	// We are hijacking the button formerly allocated to paranoid for the authenticated mode
+	ConfigMode configMode = paranoid ? Config_Authenticated : Config_Standard;
     
 	int keySize = 0;
 	int blockSize = 0;
@@ -237,6 +244,9 @@ static void createConfig(const std::string& rootDir, bool paranoid, const char* 
 	bool chainedIV = false;
 	bool externalIV = false;
 	bool allowHoles = true;
+	bool authenticatedEncryption = false;
+	std::string yubikey = "none";
+
 	long desiredKDFDuration = NormalKDFDuration;
     
 	if (reverseEncryption)
@@ -247,6 +257,8 @@ static void createConfig(const std::string& rootDir, bool paranoid, const char* 
 		blockMACBytes = 0;
 		blockMACRandBytes = 0;
 	}
+
+	if (YK_ENABLED) yubikey = "YK_WRAP_PATH";
 
 	if(configMode == Config_Paranoia)
 	{
@@ -265,7 +277,20 @@ static void createConfig(const std::string& rootDir, bool paranoid, const char* 
 		chainedIV = true;
 		externalIV = true;
 		desiredKDFDuration = ParanoiaKDFDuration;
-	} else {
+	} 
+	else if (configMode == Config_Authenticated) {
+		// The new authenticated mode
+		authenticatedEncryption = true;
+		keySize = 256;
+		blockSize = DefaultBlockSize;
+		alg = findCipherAlgorithm("AES", keySize);
+		nameIOIface = BlockNameIO::CurrentInterface();
+		uniqueIV   = true;
+		chainedIV  = true;
+		externalIV = false;
+		desiredKDFDuration = NormalKDFDuration;
+	}
+	else {
 		// xgroup(setup)
 		// AES w/ 192 bit key, block name encoding, per-file initialization
 		// vectors are all standard.
@@ -307,6 +332,8 @@ static void createConfig(const std::string& rootDir, bool paranoid, const char* 
 	config->chainedNameIV = chainedIV;
 	config->externalIVChaining = externalIV;
 	config->allowHoles = allowHoles;
+	config->authenticatedEncryption = authenticatedEncryption;
+	config->yubikey = yubikey;
 
 	config->salt.clear();
 	config->kdfIterations = 0; // filled in by keying function
@@ -423,6 +450,9 @@ OpenOrCreate(HWND hwnd)
 	// if directory is already configured add and try to mount
 	boost::shared_ptr<EncFSConfig> config(new EncFSConfig);
 	if (readConfig(slashTerminate(wchar_to_utf8_cstr(dir.c_str())), config) != Config_None) {
+		
+		if (config->yubikey != "none") YK_ENABLED = true;
+
 		char drive = SelectFreeDrive(hwnd);
 		if (drive) {
 			Drives::drive_t dr(Drives::Add(dir, drive));
@@ -439,8 +469,11 @@ OpenOrCreate(HWND hwnd)
 	if (DialogBoxParam(hInst, (LPCTSTR) IDD_OPTIONS, hwnd, (DLGPROC) OptionsDlgProc, (LPARAM) &data) != IDOK)
 		return;
 
+
 	// add configuration and add new drive
 	createConfig(slashTerminate(wchar_to_utf8_cstr(dir.c_str())), data.paranoia, wchar_to_utf8_cstr(data.password).c_str());
+
+	MessageBox(NULL, _T("Ensure Yubikey is inserted and press button after password entry"), _T("EncFS"), MB_ICONINFORMATION);
 
 	Drives::drive_t dr(Drives::Add(dir, data.drive));
 	if (dr)
@@ -469,6 +502,19 @@ OptionsDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 			return TRUE;
 		case IDOK:
 			pData->paranoia = (IsDlgButtonChecked(hWnd, IDC_CHKPARANOIA) == BST_CHECKED);
+
+			if (IsDlgButtonChecked(hWnd, IDC_CHKYUBIKEY) == BST_CHECKED) {
+				char * YK_WRAP_PATH = getenv("YK_WRAP_PATH");
+				if ( YK_WRAP_PATH != NULL ) {
+					YK_ENABLED = true;
+					MessageBox(NULL, _T("Ensure Yubikey is inserted and press button"), _T("EncFS"), MB_ICONINFORMATION);
+				}
+				else {
+					MessageBox(NULL, _T("YK_WRAP_PATH environment variable not set!"), _T("EncFS"), MB_ICONINFORMATION);
+					return true;
+				}
+			}
+
 			GetDlgItemText(hWnd, IDC_PWD1, buf1, LENGTH(buf1));
 			GetDlgItemText(hWnd, IDC_PWD2, buf2, LENGTH(buf2));
 			diff = (_tcscmp(buf1, buf2) != 0);
@@ -484,6 +530,7 @@ OptionsDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				SendDlgItemMessage(hWnd, IDC_CMBDRIVE, CB_GETLBTEXT, i, (LPARAM) (LPTSTR) buf1);
 				pData->drive = buf1[0];
 			}
+			
 			GetDlgItemText(hWnd, IDC_PWD1, pData->password, LENGTH(pData->password));
 			EndDialog(hWnd, LOWORD(wParam));
 			return TRUE;
@@ -582,9 +629,18 @@ MainDlgProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 				boost::shared_ptr<Drive> drive = Drives::GetDrive(IDM_MOUNT_N(id));
 				if (!drive)
 					return 1;
+					
+				boost::shared_ptr<EncFSConfig> config(new EncFSConfig); // **********
+				if (readConfig(slashTerminate(wchar_to_utf8_cstr(drive->dir.c_str())), config) != Config_None) {
+					if (config->yubikey != "none") YK_ENABLED = true;
+				}
 
 				switch (IDM_MOUNT_TYPE(id)) {
 				case IDM_TYPE_MOUNT:
+					// check Yubikey environment
+					if ( YK_ENABLED ) {
+						MessageBox(NULL, _T("Ensure Yubikey is inserted and press button after password entry"), _T("EncFS"), MB_ICONINFORMATION);
+					}
 					drive->Mount(hWnd);
 					break;
 				case IDM_TYPE_UMOUNT:
